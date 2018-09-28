@@ -1,16 +1,31 @@
-import com.lesfurets.gradle.*
-
-plugins {
-    id "io.codearte.nexus-staging" version "0.8.0"
-}
-
 apply plugin: 'groovy'
 apply plugin: 'maven'
 apply plugin: 'signing'
 apply plugin: 'jacoco'
 
+apply plugin: 'com.jfrog.artifactory'
+apply plugin: 'java'
+apply plugin: 'maven-publish'
+
+buildscript {
+    repositories {
+        jcenter()
+    }
+    dependencies {
+        classpath(group: 'org.jfrog.buildinfo', name: 'build-info-extractor-gradle', version: '4+')
+    }
+}
+
 repositories {
     mavenCentral()
+}
+
+allprojects {
+    repositories {
+        maven {
+            url "http://localhost:8081/artifactory/jcenter"
+        }
+    }
 }
 
 group = "com.lesfurets"
@@ -46,32 +61,6 @@ if (project.hasProperty('extProps')) {
 
 defaultTasks 'test'
 
-task javadocJar(type: Jar) {
-    classifier = 'javadoc'
-    from groovydoc
-}
-
-task sourcesJar(type: Jar) {
-    classifier = 'sources'
-    from sourceSets.main.allSource
-}
-
-artifacts {
-    archives javadocJar, sourcesJar
-}
-
-signing {
-    sign configurations.archives
-}
-
-// Copy the resolved grapes configuration to a maven2 like directory structure (no transitive dependencies)
-task copyGrapesDependencies(type: CopyDependenciesToMavenTreeTask) {
-    configuration = configurations.grape
-    outputDir = "$buildDir/grapes"
-}
-
-test.dependsOn copyGrapesDependencies
-
 test {
     systemProperty "grape.config", "$projectDir/grapeConfig.xml"
     systemProperty "grape.home", file("$buildDir/grapes").toURI()
@@ -90,94 +79,32 @@ jacocoTestReport {
     }
 }
 
-uploadArchives {
-    repositories {
-        mavenDeployer {
-            beforeDeployment { MavenDeployment deployment -> signing.signPom(deployment) }
-
-            def repo = project.hasProperty('repository') ?
-                            project.repository :
-                            "https://oss.sonatype.org/service/local/staging/deploy/maven2/"
-            repository(url: repo) {
-                authentication(userName: ossrhUsername, password: ossrhPassword)
-            }
-
-            def snapRepo = project.hasProperty('snapshotRepository') ?
-                            project.snapshotRepository :
-                            "https://oss.sonatype.org/content/repositories/snapshots/"
-            snapshotRepository(url: snapRepo) {
-                authentication(userName: ossrhUsername, password: ossrhPassword)
-            }
-
-            pom.project {
-                name "$project.group:$project.archivesBaseName"
-                packaging 'jar'
-                description 'Jenkins Pipeline Unit testing framework'
-                url 'https://github.com/lesfurets/JenkinsPipelineUnit'
-
-                scm {
-                    url 'https://github.com/lesfurets/JenkinsPipelineUnit'
-                    connection 'scm:git:git://github.com/lesfurets/JenkinsPipelineUnit.git'
-                    developerConnection 'scm:git:git@github.com/lesfurets/JenkinsPipelineUnit.git'
-                }
-
-                licenses {
-                    license {
-                        name 'MIT License'
-                        url 'http://www.opensource.org/licenses/mit-license.php'
-                        distribution 'repo'
-                    }
-                }
-
-                developers {
-                    developer {
-                        id 'ozangunalp'
-                        name 'Ozan Gunalp'
-                        email 'ozangunalp@gmail.com'
-                        url 'https://github.com/ozangunalp'
-                        organization 'lesfurets.com'
-                        organizationUrl 'https://github.com/lesfurets'
-                    }
-                    developer {
-                        id 'EQuincerot'
-                        name 'Emmanuel Quincerot'
-                        url 'https://github.com/EQuincerot'
-                        organization 'lesfurets.com'
-                        organizationUrl 'https://github.com/lesfurets'
-                    }
-                    developer {
-                        name 'Thomas du Boÿs'
-                        url 'https://github.com/Skool'
-                        id 'Skool'
-                        organization 'lesfurets.com'
-                        organizationUrl 'https://github.com/lesfurets'
-                    }
-                }
-            }
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
         }
     }
 }
 
-nexusStaging {
-    delayBetweenRetriesInMillis = 5000
+artifactory {
+    contextUrl = 'http://localhost:8081/artifactory'
+    publish {
+        repository {
+            repoKey = 'libs-snapshot-local' // The Artifactory repository key to publish to
+            username = "${artifactory_user}" // The publisher user name
+            password = "${artifactory_password}" // The publisher password
+        }
+        defaults {
+            // Reference to Gradle publications defined in the build script.
+            // This is how we tell the Artifactory Plugin which artifacts should be
+            // published to Artifactory.
+            publications('mavenJava')
+            publishArtifacts = true
+            // Properties to be attached to the published artifacts.
+            properties = ['qa.level': 'basic', 'dev.team' : 'core']
+            // Publish generated POM files to Artifactory (true by default)
+            publishPom = true
+        }
+    }
 }
-
-// Deploy tasks
-closeAndReleaseRepository.mustRunAfter(uploadArchives)
-closeRepository.enabled = !project.version.toString().endsWith('-SNAPSHOT')
-releaseRepository.enabled = !project.version.toString().endsWith('-SNAPSHOT')
-
-task verify(dependsOn: build)
-task deploy(dependsOn: [build, uploadArchives, closeAndReleaseRepository])
-
-// Release commits and tag
-task writeVersion(type: SetVersionTask)
-task commitRelease(type: GitCommitTask, dependsOn: [writeVersion])
-task tagVersion(type: GitTagTask, dependsOn: [writeVersion, commitRelease])
-task writeNextSnapshot(type: SetNextSnapshotVersionTask)
-task commitNextDevVersion(type: GitCommitTask, dependsOn: [writeNextSnapshot]) {
-    message = "Next dev version"
-}
-
-task release(dependsOn: [writeVersion, tagVersion, commitRelease])
-task nextDevVersion(dependsOn: [writeNextSnapshot, commitNextDevVersion])
